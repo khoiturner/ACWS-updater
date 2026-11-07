@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ACWS Field Updater</title>
+<style>
+/* Layout: one column of task cards, widest 600px, console fixed at the bottom of the flow.
+   Instrument panel palette: cool grey paper, ink text, signal blue for actions. */
+:root {
+  --bg: #eef0f3;
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --line: #d2d7de;
+  --fg: #171a1f;
+  --fg-dim: #5c6572;
+  --accent: #10559a;
+  --accent-fg: #ffffff;
+  --ok: #1a7340;
+  --warn: #8a5a00;
+  --bad: #b02a1f;
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12141a;
+    --surface: #1b1f27;
+    --surface-2: #22262f;
+    --line: #333a46;
+    --fg: #e4e7ec;
+    --fg-dim: #9aa3b2;
+    --accent: #6aa5f0;
+    --accent-fg: #0c1017;
+    --ok: #4cc47d;
+    --warn: #d6a44c;
+    --bad: #f0796b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12141a;
+  --surface: #1b1f27;
+  --surface-2: #22262f;
+  --line: #333a46;
+  --fg: #e4e7ec;
+  --fg-dim: #9aa3b2;
+  --accent: #6aa5f0;
+  --accent-fg: #0c1017;
+  --ok: #4cc47d;
+  --warn: #d6a44c;
+  --bad: #f0796b;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px calc(28px + env(safe-area-inset-bottom, 0px));
+}
+main { max-width: 600px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { color: var(--fg-dim); font-size: 13px; margin: 2px 0 0; }
+
+.pill {
+  font: 600 11px/1 var(--sans); letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--fg-dim); white-space: nowrap;
+}
+.pill[data-state="on"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.pill[data-state="busy"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.pill[data-state="err"] { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+
+section { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+h2 {
+  font: 600 11px/1 var(--sans); letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--fg-dim); margin: 0 0 10px;
+}
+p { margin: 0 0 10px; }
+p:last-child { margin-bottom: 0; }
+
+button {
+  font: 500 15px/1 var(--sans); padding: 11px 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--fg);
+  cursor: pointer; min-height: 44px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.row > button { flex: 1 1 130px; }
+.wide { width: 100%; }
+
+input[type="file"] { width: 100%; font: 14px var(--sans); color: var(--fg-dim); }
+input[type="text"] {
+  flex: 1 1 140px; min-width: 0; font: 14px var(--mono); padding: 10px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--fg);
+}
+
+/* File pre-flight: what this hex will actually write to the PIC */
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 1px; background: var(--line);
+         border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 12px 0; }
+.fact { background: var(--surface-2); padding: 9px 11px; min-width: 0; }
+.fact dt { font: 600 10px/1.4 var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--fg-dim); }
+.fact dd { margin: 3px 0 0; font: 600 17px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.fact dd small { font: 400 12px/1 var(--sans); color: var(--fg-dim); }
+
+.bar { height: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; margin: 10px 0 8px; }
+.bar > div { height: 100%; width: 0; background: var(--accent); transition: width 0.25s linear; }
+.phase { font: 13px/1.4 var(--mono); color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+
+pre#log {
+  margin: 0; padding: 11px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line);
+  font: 12.5px/1.55 var(--mono); height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+#log b { font-weight: 600; color: var(--accent); }
+#log i { font-style: normal; color: var(--fg-dim); }
+#log .g { color: var(--ok); }
+#log .r { color: var(--bad); }
+
+.note { font-size: 13px; color: var(--fg-dim); }
+.banner { border-left: 3px solid var(--bad); padding-left: 11px; }
+.banner.info { border-left-color: var(--accent); }
+code { font: 12.5px var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+@media (prefers-reduced-motion: reduce) { .bar > div { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>ACWS Field Updater</h1>
+      <p class="sub">PIC24EP512GU810 over Bluetooth LE &middot; <span id="ver"></span></p>
+    </div>
+    <span class="pill" id="state">Disconnected</span>
+  </header>
+
+  <section id="unsupported" hidden>
+    <h2>This browser can't do it</h2>
+    <p class="banner">Web Bluetooth isn't available here.</p>
+    <p class="note">Use Chrome or Edge on Android, Windows, macOS or Linux. iOS and iPadOS don't support
+    Web Bluetooth in any browser, including Chrome for iOS — on an iPhone, use a BLE terminal app for the
+    debug port and run <code>ble_update.py</code> from a laptop to update firmware.</p>
+    <p class="note">The page must also be served over HTTPS or from <code>localhost</code>.</p>
+  </section>
+
+  <section id="connect-card">
+    <h2>1 &middot; Connection</h2>
+    <p class="note" id="conn-note">Power the unit, then connect. The device advertises the Nordic UART
+    Service as <code>ACWS-G3</code>.</p>
+    <div class="row">
+      <button class="primary" id="btn-connect">Connect</button>
+      <button id="btn-disconnect" disabled>Disconnect</button>
+    </div>
+  </section>
+
+  <section class="needs-ble">
+    <h2>2 &middot; Firmware file</h2>
+    <p class="note">The <code>.hex</code> from CCS or MPLAB X. It's checked here before anything is sent.</p>
+    <input type="file" id="file" aria-label="Firmware hex file">
+    <dl class="facts" id="facts">
+      <div class="fact"><dt>Flash rows</dt><dd id="f-rows">&mdash;</dd></div>
+      <div class="fact"><dt>Instruction words</dt><dd id="f-words">&mdash;</dd></div>
+      <div class="fact"><dt>Config words</dt><dd id="f-cfg">&mdash;</dd></div>
+      <div class="fact"><dt>Transfer</dt><dd id="f-time">&mdash;</dd></div>
+    </dl>
+    <p class="note" id="file-msg">No file chosen yet.</p>
+    <div class="bar"><div id="bar"></div></div>
+    <p class="phase" id="phase">Idle</p>
+    <button class="primary wide" id="btn-program" disabled>Erase, program and verify</button>
+  </section>
+
+  <section class="needs-ble">
+    <h2>3 &middot; Checks and recovery</h2>
+    <div class="row">
+      <button id="btn-id" disabled>Read ID</button>
+      <button id="btn-verify" disabled>Verify</button>
+      <button id="btn-info" disabled>Info</button>
+      <button id="btn-run" disabled>Release pins</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="danger wide" id="btn-erase" disabled>Erase chip&hellip;</button>
+    </div>
+    <div id="erase-confirm" hidden style="margin-top:8px">
+      <p class="banner">This wipes the PIC's program memory. It can't be undone, and the unit won't run
+      again until it is programmed.</p>
+      <div class="row">
+        <button class="danger" id="btn-erase-yes">Erase now</button>
+        <button id="btn-erase-no">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="needs-ble">
+    <h2>4 &middot; Debug console</h2>
+    <pre id="log" aria-live="polite" aria-label="Device console"><i>Not connected. The PIC24 debug port (115200 8N1) appears here once you connect.</i></pre>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="tx" placeholder="send a line to the PIC24" autocomplete="off" spellcheck="false" disabled>
+      <button id="btn-send" disabled>Send</button>
+      <button id="btn-clear">Clear</button>
+    </div>
+    <p class="note" style="margin-top:8px">Lines starting with <code>$$</code> are commands for the ESP32,
+    not the PIC. Use <code>$$&gt;text</code> to send a literal <code>$$</code> line through to the PIC.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+// Nordic UART Service, as the ESP32 sketch advertises it.
+const NUS = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";   // we write
+const NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";   // device notifies
+
+// PIC24EP512GU810 memory map, in HEX byte addresses (= 2 x PC address).
+const CODE_END_BYTES = 0x55800 * 2;
+const CFG_BASE_BYTES = 0xf80004 * 2;
+const CFG_COUNT = 8;
+const ROW_FILE_BYTES = 512;          // 128 instructions x 4 bytes
+const CHUNK = 180;                   // fits the 185-byte MTU iOS/Android negotiate
+const EST_RATE = 14000;              // bytes/s, write-with-response over BLE
+
+const PAGE_VERSION = "updater 1.0 (2026-11-07)";   // quote this when reporting a problem
+
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+
+let dev = null, rxChar = null, txChar = null;
+let connected = false, busy = false;
+let fileBytes = null, fileName = "";
+// Notification lines plus a read cursor. A cursor (rather than clearing the
+// array on every match) keeps lines that arrive in the same polling window as
+// the one being waited for - otherwise a quick "Done in" right behind "Loaded"
+// is lost and the page waits forever.
+let lineBuf = "", lines = [], readIdx = 0;
+
+// ---------- console ----------
+function put(text, cls) {
+  const log = $("log");
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 6;
+  const el = document.createElement(cls === "cmd" ? "b" : cls ? "span" : "span");
+  if (cls && cls !== "cmd") el.className = cls;
+  el.textContent = text;
+  log.appendChild(el);
+  if (atEnd) log.scrollTop = log.scrollHeight;
+}
+function putLine(text, cls) { put(text + "\n", cls); }
+function clearLog() { $("log").textContent = ""; }
+
+function setState(label, kind) {
+  const p = $("state");
+  p.textContent = label;
+  if (kind) p.dataset.state = kind; else delete p.dataset.state;
+}
+function setPhase(text) { $("phase").textContent = text; }
+function setBar(frac) { $("bar").style.width = Math.max(0, Math.min(1, frac)) * 100 + "%"; }
+
+function refreshButtons() {
+  const live = connected && !busy;
+  for (const id of ["btn-id", "btn-verify", "btn-info", "btn-run", "btn-erase", "btn-send"]) $(id).disabled = !live;
+  $("tx").disabled = !live;
+  $("btn-program").disabled = !live || !fileBytes || !fileBytes.length;
+  $("btn-connect").disabled = connected || busy;
+  $("btn-disconnect").disabled = !connected || busy;
+}
+
+// ---------- notification stream ----------
+function onNotify(ev) {
+  const text = new TextDecoder().decode(ev.target.value);
+  lineBuf += text;
+  let i;
+  while ((i = lineBuf.indexOf("\n")) >= 0) {
+    const line = lineBuf.slice(0, i).replace(/\r$/, "");
+    lineBuf = lineBuf.slice(i + 1);
+    lines.push(line);
+    if (lines.length > 600) { const drop = lines.length - 200; lines.splice(0, drop); readIdx = Math.max(0, readIdx - drop); }
+    const cls = /FAIL|FAILED|No response|Unexpected|overrun|incomplete/.test(line) ? "r"
+              : /Verify OK|Done in|Chip erased|Loaded|Unlocked/.test(line) ? "g" : null;
+    putLine(line, cls);
+  }
+}
+
+// Ignore anything the device said before this point.
+function resetCursor() { readIdx = lines.length; }
+
+// Wait until the device says one of `good` (resolve) or one of `bad` (throw).
+function waitFor(good, bad, timeoutMs, onTick) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      while (readIdx < lines.length) {
+        const line = lines[readIdx++];
+        for (const b of bad) if (line.includes(b)) { clearInterval(timer); return reject(new Error(line)); }
+        for (const g of good) if (line.includes(g)) { clearInterval(timer); return resolve(true); }
+      }
+      if (onTick) onTick(Date.now() - t0);
+      if (Date.now() - t0 > timeoutMs) {
+        clearInterval(timer);
+        reject(new Error("timed out waiting for: " + good.join(" / ")));
+      }
+    }, 120);
+  });
+}
+
+async function sendLine(text) {
+  await rxChar.writeValueWithResponse(enc.encode(text + "\r\n"));
+  putLine("> " + text, "cmd");
+}
+
+// ---------- connect ----------
+async function connect() {
+  try {
+    busy = true; refreshButtons();
+    setState("Connecting", "busy");
+    dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [NUS] }] });
+    dev.addEventListener("gattserverdisconnected", onDisconnected);
+    const gatt = await dev.gatt.connect();
+    const svc = await gatt.getPrimaryService(NUS);
+    rxChar = await svc.getCharacteristic(NUS_RX);
+    txChar = await svc.getCharacteristic(NUS_TX);
+    await txChar.startNotifications();
+    txChar.addEventListener("characteristicvaluechanged", onNotify);
+    connected = true;
+    clearLog();
+    putLine("connected to " + (dev.name || "device"), "g");
+    setState("Connected", "on");
+    $("conn-note").textContent = "Connected to " + (dev.name || "device") +
+      ". The PIC24 debug port is bridged below.";
+  } catch (e) {
+    const msg = /User cancelled|cancelled/i.test(e.message) ? "No device picked." : e.message;
+    putLine("connect failed: " + msg, "r");
+    setState("Disconnected", "err");
+    connected = false;
+  } finally {
+    busy = false; refreshButtons();
+  }
+}
+
+function onDisconnected() {
+  connected = false;
+  rxChar = txChar = null;
+  setState("Disconnected");
+  putLine("device disconnected", "r");
+  setPhase("Idle");
+  $("conn-note").textContent = "Power the unit, then connect.";
+  refreshButtons();
+}
+
+async function disconnect() {
+  try { if (dev && dev.gatt.connected) dev.gatt.disconnect(); } catch (e) { /* already gone */ }
+}
+
+// ---------- HEX pre-flight ----------
+// Same rules as the firmware: 4 bytes per instruction at byte address = 2 x PC,
+// CCS ";" comment lines skipped, everything after the EOF record ignored.
+function inspectHex(text) {
+  const rows = new Set(), words = new Set(), cfg = new Set();
+  let base = 0, ignored = 0, lineNo = 0, eof = false;
+  for (const raw of text.split("\n")) {
+    lineNo++;
+    if (eof) break;
+    const s = raw.trim();
+    if (!s || s[0] === ";" || s[0] === "#") continue;
+    if (s[0] !== ":") return { error: `line ${lineNo}: not an Intel HEX record` };
+    if (s.length < 11 || (s.length - 1) % 2) return { error: `line ${lineNo}: malformed record` };
+    const b = [];
+    for (let i = 1; i < s.length; i += 2) {
+      const v = parseInt(s.substr(i, 2), 16);
+      if (Number.isNaN(v)) return { error: `line ${lineNo}: bad hex digit` };
+      b.push(v);
+    }
+    if (b.length !== b[0] + 5) return { error: `line ${lineNo}: length mismatch` };
+    if (b.reduce((a, v) => (a + v) & 0xff, 0) !== 0) return { error: `line ${lineNo}: checksum error` };
+    const addr = (b[1] << 8) | b[2], type = b[3], count = b[0];
+    if (type === 0) {
+      for (let i = 0; i < count; i++) {
+        const a = base + addr + i;
+        if (a < CODE_END_BYTES) {
+          rows.add(Math.floor(a / ROW_FILE_BYTES));
+          if (a % 4 < 3) words.add(Math.floor(a / 4));
+        } else if (a >= CFG_BASE_BYTES && a < CFG_BASE_BYTES + CFG_COUNT * 4) {
+          if ((a - CFG_BASE_BYTES) % 4 < 2) cfg.add(Math.floor((a - CFG_BASE_BYTES) / 4));
+        } else ignored++;
+      }
+    } else if (type === 1) eof = true;
+    else if (type === 2) base = (((b[4] << 8) | b[5]) << 4);
+    else if (type === 4) base = (((b[4] << 8) | b[5]) << 16);
+  }
+  if (!eof) return { error: "no end-of-file record - the file looks truncated" };
+  if (!rows.size) return { error: "no program data for this device in the file" };
+  return { rows: rows.size, words: words.size, cfg: cfg.size, ignored };
+}
+
+function fmtDuration(sec) {
+  if (sec < 60) return Math.round(sec) + " s";
+  return Math.floor(sec / 60) + "m " + String(Math.round(sec % 60)).padStart(2, "0") + "s";
+}
+
+async function onFile(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  fileBytes = null;
+  for (const [id, v] of [["f-rows", "—"], ["f-words", "—"], ["f-cfg", "—"], ["f-time", "—"]]) $(id).textContent = v;
+  if (!f) { $("file-msg").textContent = "No file chosen yet."; refreshButtons(); return; }
+
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const info = inspectHex(new TextDecoder().decode(buf));
+  fileName = f.name;
+  if (info.error) {
+    $("file-msg").innerHTML = "";
+    $("file-msg").textContent = "Rejected: " + info.error;
+    $("file-msg").className = "note banner";
+    refreshButtons();
+    return;
+  }
+  fileBytes = buf;
+  $("f-rows").textContent = info.rows;
+  $("f-words").textContent = info.words.toLocaleString();
+  $("f-cfg").textContent = info.cfg;
+  $("f-time").textContent = fmtDuration(buf.length / EST_RATE);
+  $("file-msg").className = "note";
+  $("file-msg").textContent = `${f.name} — ${buf.length.toLocaleString()} bytes` +
+    (info.ignored ? `, ${info.ignored} bytes outside program flash and config will be ignored` : "");
+  refreshButtons();
+}
+
+// ---------- operations ----------
+async function runCommand(cmd, label, good, bad, timeoutMs) {
+  if (!connected || busy) return;
+  busy = true; refreshButtons();
+  setState(label, "busy"); setPhase(label + "…");
+  try {
+    resetCursor();
+    await sendLine(cmd);
+    if (good) await waitFor(good, bad || ["FAILED", "No response"], timeoutMs || 60000,
+                            (ms) => setPhase(`${label}… ${Math.round(ms / 1000)} s`));
+    setPhase(label + " finished");
+    setState("Connected", "on");
+  } catch (e) {
+    putLine("! " + e.message, "r");
+    setPhase(label + " failed");
+    setState("Error", "err");
+  } finally {
+    busy = false; refreshButtons();
+  }
+}
+
+async function program() {
+  if (!connected || busy || !fileBytes) return;
+  busy = true; refreshButtons();
+  setBar(0);
+  setState("Updating", "busy");
+  try {
+    resetCursor();
+    setPhase("Asking the unit to accept a file…");
+    await sendLine("$$update");
+    await waitFor(["Send the HEX file now"], ["Busy", "PIN required"], 15000);
+
+    const total = fileBytes.length;
+    const t0 = Date.now();
+    for (let off = 0; off < total; off += CHUNK) {
+      await rxChar.writeValueWithResponse(fileBytes.subarray(off, Math.min(off + CHUNK, total)));
+      const sent = Math.min(off + CHUNK, total);
+      const el = (Date.now() - t0) / 1000;
+      setBar(sent / total);
+      const rate = sent / el;
+      const left = rate > 0 ? (total - sent) / rate : 0;
+      setPhase(`Sending ${fileName} — ${Math.round(100 * sent / total)}%, ` +
+               `${(rate / 1024).toFixed(1)} kB/s, ${fmtDuration(left)} left`);
+      if (!connected) throw new Error("disconnected during transfer - nothing was written to the PIC");
+    }
+    setPhase("File sent, waiting for the unit to check it…");
+    await waitFor(["Loaded"], ["LOAD FAILED", "incomplete", "overrun"], 30000);
+
+    setPhase("Erasing and programming…");
+    setBar(1);
+    await waitFor(["Done in"], ["FAILED", "No response", "Unexpected device ID"], 600000,
+                  (ms) => setPhase(`Erasing, programming and verifying… ${Math.round(ms / 1000)} s`));
+    setPhase("Update complete — the PIC is running the new firmware");
+    setState("Connected", "on");
+  } catch (e) {
+    putLine("! " + e.message, "r");
+    setPhase("Update failed: " + e.message);
+    setState("Error", "err");
+  } finally {
+    busy = false; refreshButtons();
+  }
+}
+
+// ---------- wiring ----------
+$("btn-connect").addEventListener("click", connect);
+$("btn-disconnect").addEventListener("click", disconnect);
+$("file").addEventListener("change", onFile);
+$("btn-program").addEventListener("click", program);
+$("btn-id").addEventListener("click", () => runCommand("$$id", "Reading ID", ["Done in", "FAILED"], ["No response"], 30000));
+$("btn-verify").addEventListener("click", () => runCommand("$$verify", "Verifying", ["Done in"], ["FAILED", "No response"], 600000));
+$("btn-info").addEventListener("click", () => runCommand("$$info", "Info", ["Free heap"], [], 10000));
+$("btn-run").addEventListener("click", () => runCommand("$$run", "Releasing", ["released"], [], 10000));
+
+$("btn-erase").addEventListener("click", () => { $("erase-confirm").hidden = false; });
+$("btn-erase-no").addEventListener("click", () => { $("erase-confirm").hidden = true; });
+$("btn-erase-yes").addEventListener("click", () => {
+  $("erase-confirm").hidden = true;
+  runCommand("$$erase", "Erasing", ["Done in"], ["FAILED", "No response"], 60000);
+});
+
+function sendTyped() {
+  const t = $("tx");
+  if (!t.value || !connected || busy) return;
+  sendLine(t.value).catch((e) => putLine("! " + e.message, "r"));
+  t.value = "";
+}
+$("btn-send").addEventListener("click", sendTyped);
+$("tx").addEventListener("keydown", (e) => { if (e.key === "Enter") sendTyped(); });
+$("btn-clear").addEventListener("click", clearLog);
+
+$("ver").textContent = PAGE_VERSION;
+
+if (!navigator.bluetooth) {
+  // Without Web Bluetooth none of the controls can do anything, so show only
+  // the explanation rather than a page of dead buttons.
+  $("unsupported").hidden = false;
+  $("connect-card").hidden = true;
+  for (const el of document.querySelectorAll(".needs-ble")) el.hidden = true;
+  setState("Unsupported", "err");
+}
+refreshButtons();
+</script>
+</body>
+</html>
